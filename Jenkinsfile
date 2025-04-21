@@ -6,13 +6,13 @@ pipeline {
     stages {
         stage('Clone') {
             steps {
-                git branch: 'main', url: 'https://github.com/Ryuk38/cms-test.git'
+                git branch: 'main', url: 'https://github.com/Shivaani1804/Onlinefood.git'
             }
         }
 
         stage('Build App Image') {
             steps {
-                sh 'docker build -t my-cms-app .'
+                sh 'docker build -t my-ofd-app .'
             }
         }
 
