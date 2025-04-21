@@ -2,30 +2,21 @@
 session_start();
 ob_start();
 
-define('DB_HOST', 'my-mysql');
-define('DB_NAME', 'ofd');
-define('DB_USER', 'root');
-define('DB_PASS', 'root');
+$servername = "my-mysql";
+$username = "root";
+$password = "root";
+$dbname = "ofd";
 
-function getDatabaseConnection() {
-    try {
-        $dsn = "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4";
-        $pdo = new PDO($dsn, DB_USER, DB_PASS, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES => false
-        ]);
-        return $pdo;
-    } catch (PDOException $e) {
-        error_log("Database connection failed: " . $e->getMessage());
-        die("Database connection failed: " . $e->getMessage());
-    }
+// Create connection
+$conn = new mysqli($servername, $username, $password, $dbname);
+
+// Check connection
+if ($conn->connect_error) {
+    die("Connection failed: " . $conn->connect_error);
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
-        $db = getDatabaseConnection();
-
         $cart = json_decode($_POST['cart'] ?? '', true);
         $total = floatval($_POST['total'] ?? 0);
         $delivery_location = $_POST['delivery_location'] ?? '';
@@ -48,7 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Payment method is required');
         }
 
-       
+        // Validate and store payment details
         $payment_details = null;
         if ($payment_method === 'upi') {
             $upi_id = $_POST['upi_id'] ?? '';
@@ -60,7 +51,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $card_number = $_POST['card_number'] ?? '';
             $card_expiry = $_POST['card_expiry'] ?? '';
             $card_cvc = $_POST['card_cvc'] ?? '';
-            if (!preg_match('/^\d{16}$/', $card_number) || !preg_match('/^(0[1-9]|1[0-2])\/\d{2}$/', $card_expiry) || !preg_match('/^\d{3}$/', $card_cvc)) {
+            if (!preg_match('/^\d{16}$/', $card_number) ||
+                !preg_match('/^(0[1-9]|1[0-2])\/\d{2}$/', $card_expiry) ||
+                !preg_match('/^\d{3}$/', $card_cvc)) {
                 throw new Exception('Invalid card details');
             }
             $payment_details = 'Card ending in ' . substr($card_number, -4);
@@ -68,68 +61,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $payment_details = null;
         }
 
-        
-        $db->beginTransaction();
+        // Start transaction
+        $conn->begin_transaction();
 
-        
-        $stmt = $db->prepare("INSERT INTO orders (user_id, total_amount, delivery_location) VALUES (:user_id, :total_amount, :delivery_location)");
-        $stmt->execute([
-            ':user_id' => $user_id,
-            ':total_amount' => $total,
-            ':delivery_location' => $delivery_location
-        ]);
-        $order_id = $db->lastInsertId();
+        // Insert into orders
+        $stmt = $conn->prepare("INSERT INTO orders (user_id, total_amount, delivery_location) VALUES (?, ?, ?)");
+        $stmt->bind_param("ids", $user_id, $total, $delivery_location);
+        $stmt->execute();
+        $order_id = $conn->insert_id;
+        $stmt->close();
 
-        
-        $selectStmt = $db->prepare("SELECT item_id FROM menu_items WHERE name = ? LIMIT 1");
-        $insertStmt = $db->prepare("INSERT INTO order_items (order_id, item_id, quantity, price_at_time) VALUES (:order_id, :item_id, :quantity, :price_at_time)");
+        // Prepare statements for item processing
+        $selectStmt = $conn->prepare("SELECT item_id FROM menu_items WHERE name = ? LIMIT 1");
+        $insertStmt = $conn->prepare("INSERT INTO order_items (order_id, item_id, quantity, price_at_time) VALUES (?, ?, ?, ?)");
 
         foreach ($cart as $item) {
-            if (!isset($item['name']) || !isset($item['price']) || !isset($item['quantity'])) {
+            if (!isset($item['name'], $item['price'], $item['quantity'])) {
                 throw new Exception('Invalid cart item data');
             }
 
-            $selectStmt->execute([$item['name']]);
-            $item_id = $selectStmt->fetchColumn();
-            if ($item_id === false) {
+            $selectStmt->bind_param("s", $item['name']);
+            $selectStmt->execute();
+            $selectStmt->bind_result($item_id);
+            if (!$selectStmt->fetch()) {
                 throw new Exception("Item not found in menu_items: " . $item['name']);
             }
+            $selectStmt->reset();
 
-            $insertStmt->execute([
-                ':order_id' => $order_id,
-                ':item_id' => $item_id,
-                ':quantity' => (int)$item['quantity'],
-                ':price_at_time' => (float)$item['price']
-            ]);
+            $insertStmt->bind_param("iiid", $order_id, $item_id, $item['quantity'], $item['price']);
+            $insertStmt->execute();
         }
 
-        # Insert into payments table
-        $paymentStmt = $db->prepare("INSERT INTO payments (order_id, user_id, payment_method, payment_details, amount) VALUES (:order_id, :user_id, :payment_method, :payment_details, :amount)");
-        $paymentStmt->execute([
-            ':order_id' => $order_id,
-            ':user_id' => $user_id,
-            ':payment_method' => $payment_method,
-            ':payment_details' => $payment_details,
-            ':amount' => $total
-        ]);
+        $selectStmt->close();
+        $insertStmt->close();
 
-        # Commit transaction
-        $db->commit();
+        // Insert into payments
+        $paymentStmt = $conn->prepare("INSERT INTO payments (order_id, user_id, payment_method, payment_details, amount) VALUES (?, ?, ?, ?, ?)");
+        $paymentStmt->bind_param("i ss sd", $order_id, $user_id, $payment_method, $payment_details, $total);
+        $paymentStmt->execute();
+        $paymentStmt->close();
 
-        # Clear the cart
-        unset($_SESSION['cart']); # Clear session cart if used
-        # Since payment.php uses localStorage, we'll clear it via JavaScript on new.php
+        // Commit transaction
+        $conn->commit();
 
-        # Set success message in session
+        // Clear cart
+        unset($_SESSION['cart']);
+
+        // Set session message and redirect
         $_SESSION['payment_success'] = "Payment successful! Order #$order_id will be delivered soon.";
-
-        # Redirect to new.php with a success flag
         header("Location: new.php?payment_success=1");
-        exit;
+        exit();
 
     } catch (Exception $e) {
-        if (isset($db) && $db->inTransaction()) {
-            $db->rollBack();
+        if ($conn->errno) {
+            $conn->rollback();
         }
         error_log("Error in save_order.php: " . $e->getMessage());
         echo "<script>alert('Error: " . addslashes($e->getMessage()) . "'); window.history.back();</script>";
@@ -137,4 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 } else {
     echo "Invalid request method.";
 }
+
+$conn->close();
 ob_end_flush();
+?>
