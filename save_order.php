@@ -97,7 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // Insert into payments
         $paymentStmt = $conn->prepare("INSERT INTO payments (order_id, user_id, payment_method, payment_details, amount) VALUES (?, ?, ?, ?, ?)");
-        $paymentStmt->bind_param("i ss sd", $order_id, $user_id, $payment_method, $payment_details, $total);
+        $paymentStmt->bind_param("iissd", $order_id, $user_id, $payment_method, $payment_details, $total);
         $paymentStmt->execute();
         $paymentStmt->close();
 
