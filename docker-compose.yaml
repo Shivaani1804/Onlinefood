@@ -1,13 +1,13 @@
 version: '3.8'
 services:
-  cms:
+  ofd:
     build: .
     ports:
       - "8085:80"
     networks:
-      - cms-network
+      - ofd-network
    
 networks:
-  cms-network:
+  ofd-network:
     external: true
     
